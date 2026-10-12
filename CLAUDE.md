@@ -98,6 +98,18 @@ WRMSSEEvaluator.series_scores() gives per-series weight / RMSSE / contribution f
   image 587 MB, runs as non-root. README screenshots (docs/img/) were taken from the containers with headless Edge.
 - Environment note: streamlit pins pyarrow < 26, so .venv now has pyarrow 25.0.1; .venv Python is 3.12.1.
 
+## Drift monitoring (done)
+- `python -m src.monitoring` (~2.5 min) -> data/serving/drift_report.json (gitignored, 12 KB); GET /drift serves it
+  (read per request, 404 if missing); dashboard tab "Input stability (drift)". Architecture diagram (Mermaid) in README.
+- Reference 2015-01-01..2016-02-28, 10% row sample per store, fixed SEED=42 (1,281,857 rows). Windows: recent_actuals
+  2016-03-28..04-24 and forecast_inputs 2016-04-25..05-22 (built with build_store_features(future_days=28)); each also vs
+  the same 28 calendar days a year earlier (psi_vs_last_year).
+- 15 numeric features (lags, rmean/rstd, zero_streak_28, 5 price features); calendar features excluded by design.
+  PSI: 10 reference-quantile bins, merged ties, NaN bin; flag > 0.2, watch > 0.1. KS reported only (p ~ 0 at this n).
+- First run: 0 flagged / 0 watch; max PSI 0.032 (recent) and 0.047 (forecast inputs); last-year PSI about equal -> trend,
+  not season. Sales level +9.8% vs reference (FOODS +11.6%), zero share -4.2 pp: PSI is insensitive to gradual level
+  shifts in zero-heavy counts, so watch the target table. Forecast vs recent actuals -3.4..-3.8% per category (ok, < 15%).
+
 ## Conventions
 - Never random split; always time-based. Avoid leakage in lag/target-encoding features.
 - Use observed=True in groupby on category columns. Memory is tight (46M rows): keep category/int32 dtypes.
@@ -113,4 +125,4 @@ WRMSSEEvaluator.series_scores() gives per-series weight / RMSSE / contribution f
 6. ~~Serving: forecasts, FastAPI, Streamlit, Docker.~~ Done.
 7. Next LightGBM ideas (select on inner window): horizon-specific models with shorter lags for days 1-7,
    weekend/Sunday correction, per-store models (WI_2), refit through 2016-03-27 at the chosen iteration count.
-8. Drift monitoring; PySpark feature pipeline.
+8. ~~Drift monitoring.~~ Done. Next: PySpark feature pipeline; ARIMA/Prophet/Croston comparison.

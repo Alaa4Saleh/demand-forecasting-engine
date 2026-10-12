@@ -7,6 +7,46 @@ Models are evaluated with **WRMSSE**, the official M5 accuracy metric.
 **Current result:** a tuned global LightGBM model reaches **WRMSSE 0.5599** on a 28-day hold-out,
 vs **0.9228** for Seasonal Naive and **1.4864** for Naive (first LightGBM version: 0.6341).
 
+## Architecture
+
+```mermaid
+flowchart TB
+    subgraph data["1 · Data and features"]
+        direction LR
+        raw[("Raw M5 CSVs<br/>sales · calendar · prices")] --> clean["Cleaning<br/>notebook 02"]
+        clean --> long[("sales_long_clean.parquet<br/>46M rows")]
+        long --> feat["src.features<br/>lags · rolling stats · calendar · price"]
+        feat --> fstore[("Feature store<br/>per-store parquet")]
+    end
+    subgraph model["2 · Model and forecast"]
+        direction LR
+        train["src.models.lgbm<br/>train · select on inner window"] --> mdl[("artifacts/lgbm_final.txt")]
+        mdl --> fc["src.forecast<br/>next 28 days · 30,490 series"]
+    end
+    serving[("data/serving<br/>forecasts · recent actuals · metadata · drift report")]
+    subgraph docker["3 · Serving (Docker Compose)"]
+        direction LR
+        api["FastAPI<br/>/forecast · /aggregate · /alerts · /drift"] --> dash["Streamlit dashboard<br/>forecasts · totals · demand surge · drift"]
+    end
+    subgraph monitoring["4 · Monitoring"]
+        mon["src.monitoring<br/>PSI · KS · target and prediction drift"]
+    end
+    data -- "training features + future feature rows" --> model
+    model -- "forecast files" --> serving
+    serving -- "read-only mount" --> docker
+    data -. "same feature code" .-> monitoring
+    serving -- "forecasts vs recent actuals" --> monitoring
+    monitoring -- "drift_report.json" --> serving
+```
+
+- **Offline (local Python):** clean the data, build features, then train and select the model.
+  `src.forecast` writes the next 28 days of forecasts to `data/serving/`.
+- **Serving:** a FastAPI service and a Streamlit dashboard run in Docker Compose. `data/serving/`
+  is mounted read-only.
+- **Monitoring:** `src.monitoring` rebuilds features with the same code and compares them with the
+  training period. It writes `drift_report.json` to `data/serving/`, where `/drift` and the
+  dashboard read it.
+
 ## Dataset
 
 [M5 Forecasting – Accuracy](https://www.kaggle.com/competitions/m5-forecasting-accuracy) (Kaggle).
@@ -144,14 +184,16 @@ is served by a FastAPI service and shown in a Streamlit dashboard.
   | `GET /forecast?item_id&store_id&start&end` | Daily forecast for one item in one store, plus its last 28 days of sales |
   | `GET /aggregate?level=store\|cat\|dept\|state&key=` | Totals per group, and daily forecast vs actuals for one group |
   | `GET /alerts?days_of_cover=N&min_shortfall_pct=20&store_id&cat_id&limit` | Demand surge vs recent run-rate (**simulated stock**), ranked by estimated lost revenue |
+  | `GET /drift` | Latest drift report; 404 until `python -m src.monitoring` has run |
 
   - Unknown ids return 404. Malformed or out-of-window dates, and invalid parameters, return 422.
   - Interactive docs are at `/docs`.
-- **Dashboard** (`dashboard/app.py`): has three tabs, and reads only from the API.
+- **Dashboard** (`dashboard/app.py`): has four tabs, and reads only from the API.
   - **Product forecast:** recent sales vs forecast for one product in one store.
   - **Store & category totals:** actuals vs forecast by store, category, department or state.
   - **Demand surge (simulated stock):** products whose forecast runs above their recent sales
     rate, with sliders for days of stock and minimum shortfall.
+  - **Input stability (drift):** the latest drift report (see Drift monitoring).
 
 **Dashboard screenshots** (served from the Docker containers):
 
@@ -181,6 +223,51 @@ is served by a FastAPI service and shown in a Streamlit dashboard.
 >   whose short promotion spike is still in the ≥28-day-lagged features (see Error analysis)
 >   appears in the list.
 
+## Drift monitoring
+
+`src/monitoring.py` checks whether the data the model sees now still looks like its training data.
+
+**Windows**
+
+| Window | Dates | Rows |
+|---|---|---:|
+| Training reference | 2015-01-01 → 2016-02-28 | random sample, see below |
+| Recent actuals | 2016-03-28 → 2016-04-24 | 853,720 |
+| Forecast inputs | 2016-04-25 → 2016-05-22 | 853,720 |
+
+- **Reference sample:** 10% of rows per store (1,281,857 rows), drawn with a **fixed seed (42)** so
+  every run uses the same sample. Set by `SAMPLE_FRACTION` and `SEED` in `src/monitoring.py`.
+- **Forecast inputs** are the rows the served forecast is computed from.
+- **Seasonal comparison:** each current window is also compared with the same 28 calendar days one
+  year earlier.
+
+**Checks**
+- **Feature drift:** 15 numeric inputs (lags, rolling means and spreads, zero-sales streak, price
+  features).
+  - **PSI** with 10 quantile bins from the reference. Status: **flagged above 0.2**, watch from 0.1
+    to 0.2, otherwise OK. Missing values get their own bin.
+  - **KS statistic and p-value** are reported for context only. With about a million rows every
+    p-value is near 0, so KS is not used to flag.
+  - Calendar inputs are excluded, since a 28-day window differs from a full year by construction.
+- **Target drift:** mean daily units per series and the share of zero-sale days, per category.
+- **Prediction drift:** mean daily forecast vs mean daily actual over the last 28 days, per
+  category. Flagged above ±15%.
+
+**Results from the first run** (`data/serving/drift_report.json`; also shown by `/drift` and the
+dashboard):
+
+- **No input is flagged or on watch.** The largest PSI is 0.032 for recent actuals and 0.047 for
+  forecast inputs (28- and 14-day rolling means). Price features are at about 0.001.
+- **The small shifts are a trend, not seasonality.** PSI against the same 28 days last year is
+  nearly the same as against the full reference.
+- **Sales have grown since the training period:** mean daily units are up 9.8% (FOODS +11.6%,
+  HOUSEHOLD +7.0%, HOBBIES +3.5%), and zero-sale days are down 4.2 points. PSI reacts slowly to such
+  gradual level changes in zero-heavy count data, so the sales-level table shows this directly.
+- **The forecast is 3.4–3.8% below recent actual sales** in every category, inside the ±15%
+  threshold. This is consistent with the model's known slight under-forecast.
+
+![Input stability tab: PSI per input against the training period, sales level and forecast vs recent sales](docs/img/dashboard_drift.png)
+
 ## Repository structure
 
 ```
@@ -200,12 +287,13 @@ is served by a FastAPI service and shown in a Streamlit dashboard.
 │   ├── features.py           # lag / rolling / calendar / price / intermittency features
 │   ├── analysis.py           # error analysis: error shares, top series, horizon, SHAP
 │   ├── forecast.py           # final model -> data/serving/ (next 28 days, all series)
+│   ├── monitoring.py         # drift report: PSI/KS per feature, target and prediction drift
 │   └── models/
 │       ├── baselines.py      # Naive, Seasonal Naive
 │       └── lgbm.py           # global LightGBM: streaming train, inner/val evaluation, experiment log
 ├── api/                      # FastAPI service: main.py (routes), schemas.py, data.py
 ├── dashboard/app.py          # Streamlit dashboard (reads from the API)
-├── tests/                    # WRMSSE checks; API tests on synthetic serving data
+├── tests/                    # WRMSSE, drift-monitoring and API tests (synthetic data)
 ├── Dockerfile, docker-compose.yml   # serving image: API + dashboard
 ├── requirements.txt          # full environment (training + serving)
 └── requirements-serving.txt  # pinned, for the Docker image
@@ -254,7 +342,14 @@ is served by a FastAPI service and shown in a Streamlit dashboard.
    python -m src.forecast
    ```
 
-8. **Run the API and dashboard locally**, in two terminals. The dashboard is then at
+8. **Drift report** (about 2–3 minutes). This writes `data/serving/drift_report.json`, which `/drift`
+   and the dashboard's drift tab read.
+
+   ```bash
+   python -m src.monitoring
+   ```
+
+9. **Run the API and dashboard locally**, in two terminals. The dashboard is then at
    http://localhost:8501 and the API docs at http://localhost:8000/docs.
 
    ```bash
@@ -264,14 +359,14 @@ is served by a FastAPI service and shown in a Streamlit dashboard.
    streamlit run dashboard/app.py
    ```
 
-9. **Or run both with Docker** after step 7. The image contains only the serving code;
+10. **Or run both with Docker** after steps 7–8. The image contains only the serving code;
    `data/serving/` is mounted read-only.
 
    ```bash
    docker compose up --build
    ```
 
-10. **Tests**
+11. **Tests**
 
    ```bash
    python -m pytest tests
@@ -297,4 +392,4 @@ store, and loads only the columns it needs. Training data is streamed one store 
 - [ ] Move the cleaning steps from the notebooks into a `src/` script
 - [ ] PySpark feature pipeline
 - [x] FastAPI forecasting service, Streamlit dashboard and Docker setup (alerts on simulated inventory)
-- [ ] Drift monitoring
+- [x] Drift monitoring (PSI/KS, target and prediction drift; `/drift` and a dashboard tab)
