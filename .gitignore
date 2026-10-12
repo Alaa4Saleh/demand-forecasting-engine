@@ -31,3 +31,4 @@ data/serving/metadata.json
 
 # Local Claude Code preview configs
 .claude/launch.json
+data/serving/drift_report.json
