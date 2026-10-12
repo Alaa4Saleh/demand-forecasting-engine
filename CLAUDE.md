@@ -2,7 +2,7 @@
 
 Portfolio project on Kaggle M5 data (hierarchical retail demand forecasting).
 Goal: end-to-end system - baselines -> LightGBM -> PySpark pipeline -> FastAPI + Streamlit -> drift monitoring.
-Environment: Windows, PyCharm, venv, Python 3.11. Evaluation metric: WRMSSE.
+Environment: Windows, PyCharm, venv, Python 3.12 (.venv 3.12.1). Evaluation metric: WRMSSE.
 
 ## Data pipeline (done)
 - data/raw: sales_train_validation.csv, calendar.csv, sell_prices.csv
@@ -79,6 +79,21 @@ WRMSSEEvaluator.series_scores() gives per-series weight / RMSSE / contribution f
 - Zero-share buckets: 80-100% zeros over-index 1.04 but hold 6.5% of weight; <50% zeros = 66% of weight, 65% of error.
 - SHAP (20k val rows): rmean_28 0.51, item_id 0.15, dept_id 0.13, rstd_28 0.12, dow 0.10 mean |SHAP|.
 
+## Serving (done)
+- `python -m src.forecast`: lgbm_final (as is, trained to 2016-02-28) -> next 28 days 2016-04-25..2016-05-22 for all
+  30,490 series. Future rows via build_store_features(future_days=28) (calendar.csv to 2016-06-19, prices to wk 11621);
+  verified history rows identical to training features. Writes data/serving/ (gitignored): forecasts.parquet 4.4 MB
+  (id, hierarchy, date, forecast f32, sell_price f32), actuals_last28.parquet 0.7 MB, metadata.json.
+  Asserts non-negative/no NaN; forecast 1,142,145 units vs 1,183,626 actual in last 28 days (-3.5%).
+- api/ (FastAPI): /health, /catalog, /forecast, /aggregate, /alerts; data loaded once (SERVING_DIR env).
+  api/ and dashboard/ must not import src/ (the Docker image only contains them + requirements-serving.txt).
+- /alerts is SIMULATED (M5 has no inventory): stock = days_of_cover x mean daily sales of last 28 days; flagged if
+  28-day forecast > stock; ranked by shortfall x price. N < 28 flags nearly everything (N=21: 25,744 of 28,903);
+  N=28: 12,955; N=35: 5,861; N=60: 1,551. Alerts inherit model errors (e.g. FOODS_3_382_CA_3 spike item).
+- dashboard/app.py (Streamlit) reads only from the API (API_URL). Dockerfile (python:3.12-slim) + docker-compose.yml
+  (api :8000 with healthcheck, dashboard :8501). Tests: tests/test_api.py on synthetic data (15 tests).
+- Environment note: streamlit pins pyarrow < 26, so .venv now has pyarrow 25.0.1; .venv Python is 3.12.1.
+
 ## Conventions
 - Never random split; always time-based. Avoid leakage in lag/target-encoding features.
 - Use observed=True in groupby on category columns. Memory is tight (46M rows): keep category/int32 dtypes.
@@ -91,5 +106,7 @@ WRMSSEEvaluator.series_scores() gives per-series weight / RMSSE / contribution f
 3. ~~Feature engineering (lags, rolling stats, calendar, price) and global LightGBM.~~ Done (0.6341).
 4. ~~LightGBM tuning: regularization/lower lr, 2014 start, extra features, tweedie power.~~ Done (0.5599).
 5. ~~Error analysis (src/analysis.py, notebooks/04_error_analysis.ipynb).~~ Done.
-6. Next LightGBM ideas (select on inner window): horizon-specific models with shorter lags for days 1-7,
+6. ~~Serving: forecasts, FastAPI, Streamlit, Docker.~~ Done.
+7. Next LightGBM ideas (select on inner window): horizon-specific models with shorter lags for days 1-7,
    weekend/Sunday correction, per-store models (WI_2), refit through 2016-03-27 at the chosen iteration count.
+8. Drift monitoring; PySpark feature pipeline.

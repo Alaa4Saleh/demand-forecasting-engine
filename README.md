@@ -123,12 +123,52 @@ forecast. The analysis ran after the config was locked, so nothing in it fed bac
 - **SHAP:** `rmean_28` dominates. `dow` and `dept_id` matter much more for individual predictions
   than their split gain suggests.
 
+## Serving: API and dashboard
+
+The final model's forecast for the 28 days after the data ends (**2016-04-25 → 2016-05-22**)
+is served by a FastAPI service and shown in a Streamlit dashboard.
+
+- **Forecast generation** (`src/forecast.py`):
+  - Future feature rows come from the same code path as training. `calendar.csv` and the price file
+    extend past the end of sales, and every sales feature is ≥28 days old.
+  - Output: `data/serving/forecasts.parquet` (4.4 MB), `actuals_last28.parquet` (0.7 MB) and
+    `metadata.json`.
+  - Sanity check: the 28-day forecast totals 1,142,145 units, against 1,183,626 sold in the last
+    28 actual days.
+- **API** (`api/`):
+
+  | Endpoint | Purpose |
+  |---|---|
+  | `GET /health` | Model, forecast window, number of series |
+  | `GET /catalog?store_id&cat_id` | Stores, categories, departments, items |
+  | `GET /forecast?item_id&store_id&start&end` | Daily forecast for one item in one store, plus its last 28 days of sales |
+  | `GET /aggregate?level=store\|cat\|dept\|state&key=` | Totals per group, and daily forecast vs actuals for one group |
+  | `GET /alerts?days_of_cover=N&store_id&cat_id&limit` | **Simulated** stock-out risk, ranked by estimated lost revenue |
+
+  - Unknown ids return 404. Malformed or out-of-window dates, and invalid parameters, return 422.
+  - Interactive docs are at `/docs`.
+- **Dashboard** (`dashboard/app.py`): has three tabs, and reads only from the API.
+  - **Product forecast:** recent sales vs forecast for one product in one store.
+  - **Store & category totals:** actuals vs forecast by store, category, department or state.
+  - **Stock risk (simulated):** at-risk products, with a days-of-cover slider.
+
+> **Alerts are simulated.** M5 contains no inventory data. Each series is assumed to hold stock
+> equal to *N days* of its average daily sales over the last 28 days. A series is flagged when
+> its forecast demand over the 28-day window exceeds that stock.
+> - With N below 28, almost every steadily selling item is flagged by construction (for example,
+>   25,744 of 28,903 at N = 21).
+> - From N = 28 upward, the list isolates items whose forecast runs above their recent sales rate
+>   (12,955 at N = 28, 5,861 at N = 35).
+> - Alerts inherit model errors. For example, an item whose short spike sits in the ≥28-day-lagged
+>   features (see Error analysis) shows up as a risk.
+
 ## Repository structure
 
 ```
 ├── data/
 │   ├── raw/                  # M5 CSVs (not tracked)
-│   └── processed/            # cleaned parquet + per-store features (not tracked)
+│   ├── processed/            # cleaned parquet + per-store features (not tracked)
+│   └── serving/              # forecasts + recent actuals for the API (generated, not tracked)
 ├── notebooks/
 │   ├── 01_first_look.ipynb           # initial exploration
 │   ├── 02_eda_demand_patterns.ipynb  # EDA + cleaning, writes sales_long_clean.parquet
@@ -139,12 +179,16 @@ forecast. The analysis ran after the config was locked, so nothing in it fed bac
 │   ├── metrics.py            # WRMSSEEvaluator (12-level M5 hierarchy)
 │   ├── features.py           # lag / rolling / calendar / price / intermittency features
 │   ├── analysis.py           # error analysis: error shares, top series, horizon, SHAP
+│   ├── forecast.py           # final model -> data/serving/ (next 28 days, all series)
 │   └── models/
 │       ├── baselines.py      # Naive, Seasonal Naive
 │       └── lgbm.py           # global LightGBM: streaming train, inner/val evaluation, experiment log
-├── tests/test_metrics.py     # WRMSSE sanity checks
-├── api/, dashboard/          # planned: FastAPI service, Streamlit app
-└── requirements.txt
+├── api/                      # FastAPI service: main.py (routes), schemas.py, data.py
+├── dashboard/app.py          # Streamlit dashboard (reads from the API)
+├── tests/                    # WRMSSE checks; API tests on synthetic serving data
+├── Dockerfile, docker-compose.yml   # serving image: API + dashboard
+├── requirements.txt          # full environment (training + serving)
+└── requirements-serving.txt  # pinned, for the Docker image
 ```
 
 ## How to reproduce
@@ -184,7 +228,30 @@ forecast. The analysis ran after the config was locked, so nothing in it fed bac
 6. **Error analysis**: run `notebooks/04_error_analysis.ipynb`. It reads the final model and its
    validation predictions from `artifacts/`.
 
-7. **Tests**
+7. **Generate the serving forecast** (about 2 minutes). This writes `data/serving/`.
+
+   ```bash
+   python -m src.forecast
+   ```
+
+8. **Run the API and dashboard locally**, in two terminals. The dashboard is then at
+   http://localhost:8501 and the API docs at http://localhost:8000/docs.
+
+   ```bash
+   uvicorn api.main:app --port 8000
+   ```
+   ```bash
+   streamlit run dashboard/app.py
+   ```
+
+9. **Or run both with Docker** after step 7. The image contains only the serving code;
+   `data/serving/` is mounted read-only.
+
+   ```bash
+   docker compose up --build
+   ```
+
+10. **Tests**
 
    ```bash
    python -m pytest tests
@@ -209,5 +276,5 @@ store, and loads only the columns it needs. Training data is streamed one store 
 - [ ] Classical models: ARIMA / Prophet at category level, Croston for intermittent items
 - [ ] Move the cleaning steps from the notebooks into a `src/` script
 - [ ] PySpark feature pipeline
-- [ ] FastAPI forecasting service and Streamlit dashboard
+- [x] FastAPI forecasting service, Streamlit dashboard and Docker setup (alerts on simulated inventory)
 - [ ] Drift monitoring

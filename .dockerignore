@@ -1,0 +1,6 @@
+# Only the serving code and its requirements go into the image.
+*
+!api/
+!dashboard/
+!requirements-serving.txt
+**/__pycache__
