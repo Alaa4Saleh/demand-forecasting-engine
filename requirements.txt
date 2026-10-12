@@ -14,3 +14,7 @@ pyspark
 pyarrow
 scipy
 pytest
+fastapi
+uvicorn[standard]
+streamlit
+httpx
