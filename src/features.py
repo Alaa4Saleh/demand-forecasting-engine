@@ -31,7 +31,8 @@ NUMERIC_FEATURES = (
        "sell_price", "price_change", "price_rel_cat"]
 )
 FEATURES = CATEGORICAL_FEATURES + NUMERIC_FEATURES
-FEATURE_SETS = {"base": FEATURES}
+EXTRA_FEATURES = ["mday", "week_of_year", "price_rmean_4w", "price_vs_rmean_4w", "zero_streak_28"]
+FEATURE_SETS = {"base": FEATURES, "extended": FEATURES + EXTRA_FEATURES}
 
 _SOURCE_COLUMNS = ["id", "item_id", "dept_id", "cat_id", "store_id", "state_id", "date", "sold",
                    "wm_yr_wk", "month", "event_name_1", "event_type_1",
@@ -69,7 +70,18 @@ def _price_features(prices: pd.DataFrame, store: str, item_levels) -> pd.DataFra
     p["cat"] = p["item_id"].astype(str).str.split("_").str[0]
     cat_mean = p.groupby(["cat", "wm_yr_wk"], observed=True)["sell_price"].transform("mean")
     p["price_rel_cat"] = (p["sell_price"] / cat_mean).astype(np.float32)
+    rmean = p.groupby("item_id", observed=True)["sell_price"].transform(
+        lambda s: s.rolling(4, min_periods=1).mean())
+    p["price_rmean_4w"] = rmean.astype(np.float32)
+    p["price_vs_rmean_4w"] = (p["sell_price"] / rmean).astype(np.float32)
     return p.drop(columns="cat")
+
+
+def _zero_streak(sold: np.ndarray, pos: np.ndarray) -> np.ndarray:
+    """Consecutive zero-sale days ending at each row (0 on a sale day), reset at each series start."""
+    is_zero = (sold == 0).astype(np.int32)
+    run_id = np.cumsum((is_zero == 0) | (pos == 0))
+    return pd.Series(is_zero).groupby(run_id).cumsum().to_numpy(np.float32)
 
 
 def build_store_features(store: str, prices: pd.DataFrame, levels: dict) -> pd.DataFrame:
@@ -89,9 +101,13 @@ def build_store_features(store: str, prices: pd.DataFrame, levels: dict) -> pd.D
         roll = shifted.rolling(w, min_periods=w)
         df[f"rmean_{w}"] = roll.mean().to_numpy(np.float32)
         df[f"rstd_{w}"] = roll.std().to_numpy(np.float32)
+    # Zero run as of t-28 (not t): how long the item had been without sales at the forecast origin.
+    df["zero_streak_28"] = _shift_within_series(_zero_streak(sold, pos), pos, ROLL_SHIFT)
 
     # Calendar.
     df["dow"] = df["date"].dt.dayofweek.astype(np.int8)
+    df["mday"] = df["date"].dt.day.astype(np.int8)
+    df["week_of_year"] = df["date"].dt.isocalendar().week.astype(np.int8).to_numpy()
     df["month"] = df["month"].astype(np.int8)
     df["has_event"] = df["event_name_1"].notna().astype(np.int8)
     df["snap"] = df[f"snap_{store.split('_')[0]}"].astype(np.int8)
@@ -103,7 +119,7 @@ def build_store_features(store: str, prices: pd.DataFrame, levels: dict) -> pd.D
                   on=["item_id", "wm_yr_wk"], how="left")
 
     df["sold"] = df["sold"].astype(np.float32)
-    return df[["id", "date", "sold", *FEATURES]]
+    return df[["id", "date", "sold", *FEATURE_SETS["extended"]]]
 
 
 def build_all(stores=None) -> None:
