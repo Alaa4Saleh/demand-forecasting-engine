@@ -56,6 +56,11 @@ def _filters(start, end):
 def _read_chunk(path, start, end, features):
     """One store's rows in [start, end] as a float32 matrix (categoricals as codes, -1 -> NaN)."""
     chunk = pd.read_parquet(path, columns=["id", "date", "sold", *features], filters=_filters(start, end))
+    return to_matrix(chunk, features), chunk["sold"].to_numpy(np.float32), chunk[["id", "date"]]
+
+
+def to_matrix(chunk: pd.DataFrame, features) -> np.ndarray:
+    """Feature frame -> float32 model input (categoricals as their global codes, -1 -> NaN)."""
     X = np.empty((len(chunk), len(features)), dtype=np.float32)
     for j, col in enumerate(features):
         if col in CATEGORICAL_FEATURES:
@@ -64,7 +69,7 @@ def _read_chunk(path, start, end, features):
             X[:, j] = codes
         else:
             X[:, j] = chunk[col].to_numpy(np.float32)
-    return X, chunk["sold"].to_numpy(np.float32), chunk[["id", "date"]]
+    return X
 
 
 def load_matrix(start, end, features, stores=None):

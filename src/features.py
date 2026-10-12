@@ -12,7 +12,7 @@ import time
 import numpy as np
 import pandas as pd
 
-from src.data import PROCESSED_DIR, load_sell_prices
+from src.data import PROCESSED_DIR, RAW_DIR, load_sell_prices
 from src.metrics import hierarchy_from_ids
 
 FEATURES_DIR = PROCESSED_DIR / "features"
@@ -84,9 +84,42 @@ def _zero_streak(sold: np.ndarray, pos: np.ndarray) -> np.ndarray:
     return pd.Series(is_zero).groupby(run_id).cumsum().to_numpy(np.float32)
 
 
-def build_store_features(store: str, prices: pd.DataFrame, levels: dict) -> pd.DataFrame:
+def load_calendar() -> pd.DataFrame:
+    return pd.read_csv(RAW_DIR / "calendar.csv", parse_dates=["date"])
+
+
+def _future_rows(df: pd.DataFrame, calendar: pd.DataFrame, days: int) -> pd.DataFrame:
+    """One row per series for each of the `days` dates after the last sales date, with sold = NaN
+    and calendar columns from calendar.csv (which runs past the end of the sales data)."""
+    last = df["date"].max()
+    dates = pd.date_range(last + pd.Timedelta(days=1), periods=days)
+    cal = calendar.set_index("date").reindex(dates)
+    if cal["wm_yr_wk"].isna().any():
+        raise ValueError(f"calendar.csv does not cover {dates[0].date()}..{dates[-1].date()}")
+    series = df.drop_duplicates("id")[["id", "item_id", "dept_id", "cat_id", "store_id", "state_id"]]
+    fut = series.loc[series.index.repeat(days)].reset_index(drop=True)
+    fut["date"] = np.tile(dates.values, len(series))
+    for col in ["wm_yr_wk", "month", "event_name_1", "event_type_1", "snap_CA", "snap_TX", "snap_WI"]:
+        fut[col] = np.tile(cal[col].to_numpy(), len(series))
+    fut["sold"] = np.nan
+    fut["is_store_closed"] = ((fut["date"].dt.month == 12) & (fut["date"].dt.day == 25)).astype(np.int8)
+    return fut
+
+
+def build_store_features(store: str, prices: pd.DataFrame, levels: dict,
+                         calendar: pd.DataFrame = None, future_days: int = 0) -> pd.DataFrame:
+    """Feature rows for one store. With future_days > 0 (needs `calendar`), also returns rows for the
+    next future_days dates after the data ends (sold = NaN): their sales features only reach >= 28
+    days back, so they are computed from real history - the same code path as training."""
     df = pd.read_parquet(SALES_PATH, columns=_SOURCE_COLUMNS, filters=[("store_id", "==", store)])
+    if future_days:
+        for col in ["id", "item_id", "dept_id", "cat_id", "store_id", "state_id", "event_name_1", "event_type_1"]:
+            df[col] = df[col].astype(object)
+        df = pd.concat([df, _future_rows(df, calendar, future_days)], ignore_index=True)
     for col in ["id", *CATEGORICAL_FEATURES]:
+        unknown = set(df[col].dropna().unique()) - set(levels[col])
+        if unknown:
+            raise ValueError(f"{col}: values outside the training categories: {sorted(unknown)[:5]}")
         df[col] = pd.Categorical(df[col].astype(object), categories=levels[col])
     df = df.sort_values(["id", "date"], kind="stable").reset_index(drop=True)
 

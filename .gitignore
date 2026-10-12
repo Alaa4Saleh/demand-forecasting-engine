@@ -26,3 +26,5 @@ data/raw/*.csv
 data/processed/features/
 artifacts/
 data/processed/*.parquet
+data/serving/*.parquet
+data/serving/metadata.json
