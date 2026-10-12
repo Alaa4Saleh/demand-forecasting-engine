@@ -31,6 +31,7 @@ NUMERIC_FEATURES = (
        "sell_price", "price_change", "price_rel_cat"]
 )
 FEATURES = CATEGORICAL_FEATURES + NUMERIC_FEATURES
+FEATURE_SETS = {"base": FEATURES}
 
 _SOURCE_COLUMNS = ["id", "item_id", "dept_id", "cat_id", "store_id", "state_id", "date", "sold",
                    "wm_yr_wk", "month", "event_name_1", "event_type_1",

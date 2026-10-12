@@ -46,6 +46,24 @@ def hierarchy_from_ids(ids) -> pd.DataFrame:
     return h
 
 
+def dollar_sales(rows: pd.DataFrame, sell_prices: pd.DataFrame) -> pd.Series:
+    """Per-id sum of sold * sell_price over `rows` (long: id, sold, wm_yr_wk) - the WRMSSE weights."""
+    hier = hierarchy_from_ids(rows["id"].cat.categories).set_index("id")
+    recent = pd.DataFrame({
+        "id": rows["id"].to_numpy(),
+        "sold": rows["sold"].to_numpy(),
+        "wm_yr_wk": rows["wm_yr_wk"].to_numpy(),
+        "item_id": hier["item_id"].reindex(rows["id"]).to_numpy(),
+        "store_id": hier["store_id"].reindex(rows["id"]).to_numpy(),
+    })
+    prices = sell_prices[sell_prices["wm_yr_wk"].isin(recent["wm_yr_wk"].unique())]
+    prices = prices.astype({"item_id": str, "store_id": str, "wm_yr_wk": recent["wm_yr_wk"].dtype})
+    recent = recent.merge(prices, on=["store_id", "item_id", "wm_yr_wk"], how="left")
+    if recent.loc[recent["sold"] > 0, "sell_price"].isna().any():
+        raise ValueError("missing sell_price for rows with sales")
+    return (recent["sold"] * recent["sell_price"].fillna(0)).groupby(recent["id"]).sum()
+
+
 def _aggregation_matrix(hier: pd.DataFrame, keys) -> sparse.csr_matrix:
     """(n_groups x n_bottom) 0/1 matrix summing bottom series into the level's groups."""
     n = len(hier)
@@ -95,24 +113,8 @@ class WRMSSEEvaluator:
     @classmethod
     def from_long(cls, train_long: pd.DataFrame, sell_prices: pd.DataFrame, horizon: int = HORIZON):
         """Build from long train rows (id, date, sold, wm_yr_wk) and raw sell_prices."""
-        train_wide = to_wide(train_long, "sold")
-
         last = train_long[train_long["date"] > train_long["date"].max() - pd.Timedelta(days=horizon)]
-        hier = hierarchy_from_ids(last["id"].cat.categories).set_index("id")
-        recent = pd.DataFrame({
-            "id": last["id"].to_numpy(),
-            "sold": last["sold"].to_numpy(),
-            "wm_yr_wk": last["wm_yr_wk"].to_numpy(),
-            "item_id": hier["item_id"].reindex(last["id"]).to_numpy(),
-            "store_id": hier["store_id"].reindex(last["id"]).to_numpy(),
-        })
-        prices = sell_prices[sell_prices["wm_yr_wk"].isin(recent["wm_yr_wk"].unique())]
-        prices = prices.astype({"item_id": str, "store_id": str, "wm_yr_wk": recent["wm_yr_wk"].dtype})
-        recent = recent.merge(prices, on=["store_id", "item_id", "wm_yr_wk"], how="left")
-        if recent.loc[recent["sold"] > 0, "sell_price"].isna().any():
-            raise ValueError("missing sell_price for rows with sales")
-        dollar_sales = (recent["sold"] * recent["sell_price"].fillna(0)).groupby(recent["id"]).sum()
-        return cls(train_wide, dollar_sales, horizon)
+        return cls(to_wide(train_long, "sold"), dollar_sales(last, sell_prices), horizon)
 
     def _align(self, wide) -> np.ndarray:
         if isinstance(wide, pd.DataFrame):
