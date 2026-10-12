@@ -41,6 +41,15 @@ def test_level_weights_sum_to_one_and_count():
         assert np.isclose(w.sum(), 1.0)
 
 
+def test_series_scores_sum_to_level_score():
+    ev = _evaluator()
+    y, p = np.zeros((3, 2)), np.full((3, 2), 2.0)
+    for level in ("store", "item_store"):
+        s = ev.series_scores(y, p, level)
+        assert np.isclose(s["contribution"].sum(), ev.level_scores(y, p)[level])
+    assert set(ev.series_scores(y, p, "store")["store_id"]) == {"CA_1", "TX_2"}
+
+
 def test_bottom_level_matches_manual_rmsse():
     ev = _evaluator()
     y, p = np.zeros((3, 2)), np.ones((3, 2))

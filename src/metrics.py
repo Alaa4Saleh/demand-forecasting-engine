@@ -100,8 +100,11 @@ class WRMSSEEvaluator:
         dollars = dollar_sales.reindex(self.ids).fillna(0).to_numpy(dtype=np.float64)
 
         self.levels = {}
+        self.labels = {}  # level -> one row of group keys per aggregated series (S row order)
         for name, keys in LEVELS:
             S = _aggregation_matrix(hier, keys)
+            self.labels[name] = (hier.groupby(keys, sort=True).size().index.to_frame(index=False)
+                                 if keys else pd.DataFrame({"total": ["Total"]}))
             scale = _scale(S @ train)
             level_dollars = S @ dollars
             weight = level_dollars / level_dollars.sum()
@@ -136,6 +139,21 @@ class WRMSSEEvaluator:
             rmsse = np.sqrt((agg_err ** 2).mean(axis=1) / scale)
             out[name] = float(weight @ rmsse)
         return pd.Series(out, name="wrmsse")
+
+    def series_scores(self, actual_wide, pred_wide, level: str = "item_store") -> pd.DataFrame:
+        """Per-series weight, scale, RMSSE and contribution (weight x RMSSE) within one level.
+
+        `share` is the series' fraction of the level's WRMSSE; contributions sum to level_scores()[level].
+        """
+        S, scale, weight = self.levels[level]
+        agg_err = S @ (self._align(actual_wide) - self._align(pred_wide))
+        out = self.labels[level].copy()
+        out["weight"] = weight
+        out["scale"] = scale
+        out["rmsse"] = np.sqrt((agg_err ** 2).mean(axis=1) / scale)
+        out["contribution"] = out["weight"] * out["rmsse"]
+        out["share"] = out["contribution"] / out["contribution"].sum()
+        return out
 
     def score(self, actual_wide, pred_wide) -> float:
         return float(self.level_scores(actual_wide, pred_wide).mean())

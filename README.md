@@ -100,6 +100,29 @@ Notes:
 - For reference, the global (non-WRMSSE) RMSE / MAE of the baselines is 3.301 / 1.350 for Naive
   and 2.759 / 1.232 for Seasonal Naive.
 
+## Error analysis
+
+`src/analysis.py` and `notebooks/04_error_analysis.ipynb` analyze the final model's validation
+forecast. The analysis ran after the config was locked, so nothing in it fed back into tuning.
+
+- **Error is spread out.** The 20 worst series account for 4.2% of the bottom-level error (2.7% of
+  dollar weight). Every category and department contributes roughly its share of sales
+  (over-index 0.90–1.06).
+- **WI_2 is the hardest store** (over-index 1.16). It is also the hardest store for Seasonal Naive,
+  so the store is noisier rather than this being a model-specific failure.
+- **The largest errors are unexplained level changes in high-volume items, not intermittency.**
+  - Short spikes in the last 28 training days are still in the ≥28-day-lagged features, which
+    causes over-forecasts.
+  - Surges that start inside the validation window, with no price change or event, cause
+    under-forecasts.
+- **The model under-forecasts slightly (−2.4% in total), most on weekends.** Sunday has the largest
+  error. Error does not grow with the forecast horizon, because every day uses the same ≥28-day-old
+  information.
+- **Intermittent series are only slightly harder.** Series with 80–100% zero days over-index by 4%
+  but carry 6.5% of the weight. LightGBM beats Seasonal Naive by 0.26–0.36 in every zero-share bucket.
+- **SHAP:** `rmean_28` dominates. `dow` and `dept_id` matter much more for individual predictions
+  than their split gain suggests.
+
 ## Repository structure
 
 ```
@@ -109,11 +132,13 @@ Notes:
 ├── notebooks/
 │   ├── 01_first_look.ipynb           # initial exploration
 │   ├── 02_eda_demand_patterns.ipynb  # EDA + cleaning, writes sales_long_clean.parquet
-│   └── 03_baselines.ipynb            # time split, baselines, WRMSSE evaluation
+│   ├── 03_baselines.ipynb            # time split, baselines, WRMSSE evaluation
+│   └── 04_error_analysis.ipynb       # error analysis of the final LightGBM model
 ├── src/
 │   ├── data.py               # loaders, time split, long -> wide pivot
 │   ├── metrics.py            # WRMSSEEvaluator (12-level M5 hierarchy)
-│   ├── features.py           # lag / rolling / calendar / price features
+│   ├── features.py           # lag / rolling / calendar / price / intermittency features
+│   ├── analysis.py           # error analysis: error shares, top series, horizon, SHAP
 │   └── models/
 │       ├── baselines.py      # Naive, Seasonal Naive
 │       └── lgbm.py           # global LightGBM: streaming train, inner/val evaluation, experiment log
@@ -156,7 +181,10 @@ Notes:
    python -m src.models.lgbm --name final --features extended --train-start 2014-01-01 --lr 0.02 --lambda-l2 1.0 --min-data-in-leaf 500 --patience 200 --score-val
    ```
 
-6. **Tests**
+6. **Error analysis**: run `notebooks/04_error_analysis.ipynb`. It reads the final model and its
+   validation predictions from `artifacts/`.
+
+7. **Tests**
 
    ```bash
    python -m pytest tests
@@ -172,9 +200,12 @@ store, and loads only the columns it needs. Training data is streamed one store 
 - [x] Feature engineering and global LightGBM (WRMSSE 0.6341)
 - [x] LightGBM tuning: regularization and lower learning rate, train from 2014, extra features
   (WRMSSE 0.6341 → 0.5599)
-- [ ] Error analysis of the final model
-- [ ] LightGBM follow-ups: refit through 2016-03-27 at the chosen iteration count, per-store or
-  per-department models
+- [x] Error analysis of the final model
+- [ ] LightGBM follow-ups suggested by the error analysis:
+  - Horizon-specific models with shorter lags for days 1–7.
+  - A weekend correction.
+  - Per-store models.
+  - Refit through 2016-03-27 at the chosen iteration count.
 - [ ] Classical models: ARIMA / Prophet at category level, Croston for intermittent items
 - [ ] Move the cleaning steps from the notebooks into a `src/` script
 - [ ] PySpark feature pipeline

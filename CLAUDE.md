@@ -66,6 +66,19 @@ WRMSSE per level, scored val window 2016-03-28 -> 2016-04-24 (LightGBM v1 = firs
 | item_store | 1.1752 | 1.1259 | 0.8527 | 0.8461 |
 | WRMSSE | 1.4864 | 0.9228 | 0.6341 | 0.5599 |
 
+## Error analysis (final model, val window; done after the config was locked)
+src/analysis.py + notebooks/04_error_analysis.ipynb (needs artifacts/lgbm_final_val_pred.parquet and lgbm_final.txt).
+WRMSSEEvaluator.series_scores() gives per-series weight / RMSSE / contribution for any level.
+- Error is diffuse: top 20 series = 4.2% of level-12 error (2.7% of weight); cat/dept over-index 0.90-1.06.
+- Hardest store WI_2 (over-index 1.16, wRMSSE 0.98; also hardest for sNaive 1.29); hardest dept FOODS_2 (1.06).
+- Top errors = unexplained level changes in dense items (median zero share 0.08, ~11 units/day), not intermittency:
+  spikes/drops in the last 28 train days carried by >= 28-day lags (e.g. FOODS_3_382_CA_3) -> over-forecast;
+  surges starting inside val with no price change or event -> under-forecast (13 of top 20 under-forecast).
+- No events in the val window (Easter 03-27, Pesach End 04-30 fall outside); 2.5% of series had a price change in val weeks.
+- Total bias -2.4%; worst on weekends (total-level scaled bias Sun -0.48, Sat -0.28). No growth of error with horizon.
+- Zero-share buckets: 80-100% zeros over-index 1.04 but hold 6.5% of weight; <50% zeros = 66% of weight, 65% of error.
+- SHAP (20k val rows): rmean_28 0.51, item_id 0.15, dept_id 0.13, rstd_28 0.12, dow 0.10 mean |SHAP|.
+
 ## Conventions
 - Never random split; always time-based. Avoid leakage in lag/target-encoding features.
 - Use observed=True in groupby on category columns. Memory is tight (46M rows): keep category/int32 dtypes.
@@ -77,5 +90,6 @@ WRMSSE per level, scored val window 2016-03-28 -> 2016-04-24 (LightGBM v1 = firs
 2. ARIMA/Prophet on category level, Croston for intermittent items.
 3. ~~Feature engineering (lags, rolling stats, calendar, price) and global LightGBM.~~ Done (0.6341).
 4. ~~LightGBM tuning: regularization/lower lr, 2014 start, extra features, tweedie power.~~ Done (0.5599).
-5. Error analysis (src/analysis.py, notebooks/04_error_analysis.ipynb) - in progress.
-6. Remaining LightGBM ideas: refit through 2016-03-27 at the chosen iteration count, per-store/per-dept models.
+5. ~~Error analysis (src/analysis.py, notebooks/04_error_analysis.ipynb).~~ Done.
+6. Next LightGBM ideas (select on inner window): horizon-specific models with shorter lags for days 1-7,
+   weekend/Sunday correction, per-store models (WI_2), refit through 2016-03-27 at the chosen iteration count.
