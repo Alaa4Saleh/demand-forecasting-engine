@@ -99,3 +99,67 @@ class Alerts(BaseModel):
     n_evaluated: int = Field(description="Series evaluated (with sales in the last 28 days, after filters)")
     n_at_risk: int
     alerts: list[Alert] = Field(description="At-risk series, highest estimated lost revenue first")
+
+
+class DriftReference(BaseModel):
+    start: date
+    end: date
+    sample_fraction: float
+    seed: int = Field(description="Fixed sampling seed: the reference sample is identical on every run")
+    rows_sampled: int
+
+
+class DriftWindow(BaseModel):
+    start: date
+    end: date
+    last_year_start: date
+    last_year_end: date
+    rows: int
+
+
+class DriftThresholds(BaseModel):
+    psi_flag: float
+    psi_watch: float
+    prediction_gap_pct: float
+
+
+class FeatureDrift(BaseModel):
+    feature: str
+    window: str
+    psi: float = Field(description="Population Stability Index vs the training reference (flag > psi_flag)")
+    psi_vs_last_year: Optional[float] = Field(None, description="PSI vs the same 28 days one year earlier")
+    ks_stat: Optional[float] = Field(None, description="Kolmogorov-Smirnov statistic (context only, not flagged)")
+    ks_pvalue: Optional[float] = None
+    ref_mean: Optional[float] = None
+    cur_mean: Optional[float] = None
+    status: Literal["ok", "watch", "flagged", "n/a"]
+
+
+class TargetDrift(BaseModel):
+    category: str
+    ref_mean_daily: float
+    cur_mean_daily: float
+    change_pct: float
+    ref_zero_share: float
+    cur_zero_share: float
+    zero_share_change_pp: float
+
+
+class PredictionDrift(BaseModel):
+    category: str
+    forecast_mean_daily: float
+    recent_actual_mean_daily: float
+    gap_pct: float
+    status: Literal["ok", "flagged"]
+
+
+class DriftReport(BaseModel):
+    generated_at: str
+    model: Optional[str] = None
+    reference: DriftReference
+    windows: dict[str, DriftWindow]
+    thresholds: DriftThresholds
+    features: list[FeatureDrift]
+    target: list[TargetDrift] = Field(description="Sales level and zero share per category, reference vs recent actuals")
+    prediction: list[PredictionDrift] = Field(description="Forecast vs recent actual mean per category")
+    flagged: list[str] = Field(description="feature@window pairs with PSI above the flag threshold")

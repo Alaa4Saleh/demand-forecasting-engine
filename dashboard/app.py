@@ -12,6 +12,17 @@ import streamlit as st
 API_URL = os.environ.get("API_URL", "http://localhost:8000").rstrip("/")
 
 STATE_NAMES = {"CA": "California", "TX": "Texas", "WI": "Wisconsin"}
+FEATURE_NAMES = {
+    "lag_28": "Sales 28 days before", "lag_35": "Sales 35 days before", "lag_42": "Sales 42 days before",
+    "rmean_7": "Avg daily sales, 7 days", "rmean_14": "Avg daily sales, 14 days", "rmean_28": "Avg daily sales, 28 days",
+    "rstd_7": "Sales variability, 7 days", "rstd_14": "Sales variability, 14 days",
+    "rstd_28": "Sales variability, 28 days", "zero_streak_28": "Days without a sale (run)",
+    "sell_price": "Shelf price", "price_change": "Price change vs last week",
+    "price_rel_cat": "Price vs category average", "price_rmean_4w": "Avg price, 4 weeks",
+    "price_vs_rmean_4w": "Price vs 4-week average",
+}
+WINDOW_NAMES = {"recent_actuals": "Last 28 days of actual sales", "forecast_inputs": "Inputs to the current forecast"}
+STATUS_COLORS = {"ok": "#54a24b", "watch": "#f2b134", "flagged": "#e45756", "n/a": "#bab0ac"}
 LEVELS = {"Store": "store", "Category": "cat", "Department": "dept", "State": "state"}
 
 st.set_page_config(page_title="Demand Forecast", layout="wide")
@@ -70,8 +81,8 @@ with st.sidebar:
     category = st.selectbox("Category", [None] + catalog["categories"],
                             format_func=lambda c: "All categories" if c is None else nice(c))
 
-tab_item, tab_totals, tab_risk = st.tabs(["Product forecast", "Store & category totals",
-                                          "Demand surge (simulated stock)"])
+tab_item, tab_totals, tab_risk, tab_drift = st.tabs(["Product forecast", "Store & category totals",
+                                                     "Demand surge (simulated stock)", "Input stability (drift)"])
 
 # --- Product forecast ----------------------------------------------------------------------------
 with tab_item:
@@ -167,3 +178,83 @@ with tab_risk:
             "Est. lost revenue ($)": st.column_config.NumberColumn(format="$%.0f"),
         })
     st.caption(risk["note"])
+
+# --- Input stability (drift) ---------------------------------------------------------------------
+with tab_drift:
+    try:
+        drift = api("/drift")
+    except requests.HTTPError:
+        drift = None
+    if drift is None:
+        st.info("No drift report yet. Generate one with `python -m src.monitoring`.")
+    else:
+        ref, thr = drift["reference"], drift["thresholds"]
+        st.caption(f"Compares what the model sees now with its training period {ref['start']} to {ref['end']} "
+                   f"({ref['rows_sampled']:,} sampled rows, fixed seed {ref['seed']}). Report generated "
+                   f"{drift['generated_at']}.")
+        feats = pd.DataFrame(drift["features"])
+        window = st.radio("Compare", list(drift["windows"]), horizontal=True, format_func=WINDOW_NAMES.get)
+        win = drift["windows"][window]
+        f = feats[feats["window"] == window].copy()
+        f["Input"] = f["feature"].map(FEATURE_NAMES).fillna(f["feature"])
+        counts = f["status"].value_counts()
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Inputs checked", len(f))
+        m2.metric("Shifted (PSI > %.1f)" % thr["psi_flag"], int(counts.get("flagged", 0)))
+        m3.metric("Watch (PSI > %.1f)" % thr["psi_watch"], int(counts.get("watch", 0)))
+        m4.metric("Stable", int(counts.get("ok", 0)))
+
+        bars = (alt.Chart(f, title=f"Input shift vs training period ({win['start']} to {win['end']})")
+                .mark_bar().encode(
+                    y=alt.Y("Input:N", sort="-x", title=None, axis=alt.Axis(labelLimit=260)),
+                    x=alt.X("psi:Q", title="Population Stability Index (PSI)",
+                            scale=alt.Scale(domain=[0, max(0.25, float(f["psi"].max()) * 1.1)])),
+                    color=alt.Color("status:N", title="Status", scale=alt.Scale(
+                        domain=list(STATUS_COLORS), range=list(STATUS_COLORS.values()))),
+                    tooltip=["Input:N", alt.Tooltip("psi:Q", format=".3f", title="PSI vs training"),
+                             alt.Tooltip("psi_vs_last_year:Q", format=".3f", title="PSI vs same days last year"),
+                             alt.Tooltip("ref_mean:Q", format=".3f", title="Training average"),
+                             alt.Tooltip("cur_mean:Q", format=".3f", title="Current average")]))
+        rules = alt.Chart(pd.DataFrame({"x": [thr["psi_watch"], thr["psi_flag"]]})).mark_rule(
+            strokeDash=[4, 4], color="grey").encode(x="x:Q")
+        st.altair_chart((bars + rules).properties(height=28 * len(f) + 40), use_container_width=True)
+        st.caption("Dashed lines: watch (0.1) and shifted (0.2). The same check against the same 28 days a year "
+                   "earlier is in the tooltip: if an input moved against the training period but not against last "
+                   "year, the change is seasonal rather than drift.")
+
+        c1, c2 = st.columns(2)
+        with c1:
+            st.subheader("Sales level")
+            t = pd.DataFrame(drift["target"])
+            t["Category"] = t["category"].map(lambda c: c if c == "Total" else nice(c))
+            st.dataframe(t.rename(columns={
+                "ref_mean_daily": "Avg daily units, training", "cur_mean_daily": "Avg daily units, last 28 days",
+                "change_pct": "Change (%)", "zero_share_change_pp": "Zero-sale days (change, pts)"})[
+                ["Category", "Avg daily units, training", "Avg daily units, last 28 days", "Change (%)",
+                 "Zero-sale days (change, pts)"]], hide_index=True, use_container_width=True, column_config={
+                "Avg daily units, training": st.column_config.NumberColumn(format="%.2f"),
+                "Avg daily units, last 28 days": st.column_config.NumberColumn(format="%.2f"),
+                "Change (%)": st.column_config.NumberColumn(format="%+.1f"),
+                "Zero-sale days (change, pts)": st.column_config.NumberColumn(format="%+.1f")})
+        with c2:
+            st.subheader("Forecast vs recent sales")
+            pr = pd.DataFrame(drift["prediction"])
+            pr["Category"] = pr["category"].map(lambda c: c if c == "Total" else nice(c))
+            pr["Status"] = pr["status"].map({"ok": "Within range", "flagged": "Check"})
+            st.dataframe(pr.rename(columns={
+                "forecast_mean_daily": "Forecast, avg daily units", "recent_actual_mean_daily": "Last 28 days, avg daily units",
+                "gap_pct": "Gap (%)"})[["Category", "Forecast, avg daily units", "Last 28 days, avg daily units",
+                                        "Gap (%)", "Status"]], hide_index=True, use_container_width=True, column_config={
+                "Forecast, avg daily units": st.column_config.NumberColumn(format="%.2f"),
+                "Last 28 days, avg daily units": st.column_config.NumberColumn(format="%.2f"),
+                "Gap (%)": st.column_config.NumberColumn(format="%+.1f")})
+            st.caption(f"'Check' when the forecast differs from recent sales by more than {thr['prediction_gap_pct']:.0f}%.")
+
+        with st.expander("How to read this"):
+            st.markdown(
+                "- **PSI** measures how much an input's distribution has moved from the training period: below 0.1 "
+                "is stable, 0.1-0.2 worth watching, above 0.2 a real shift that can degrade the forecast.\n"
+                "- Sales inputs are mostly zeros and small counts, so PSI reacts slowly to a gradual change in "
+                "sales level; the **Sales level** table shows that change directly.\n"
+                "- A KS statistic is also computed for each input (in the API) as context; with this many rows "
+                "its p-value is always tiny, so it is not used to flag.")

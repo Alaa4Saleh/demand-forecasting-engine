@@ -3,6 +3,7 @@
 Run:  uvicorn api.main:app --port 8000      (data folder: SERVING_DIR, default data/serving)
 Docs: http://localhost:8000/docs
 """
+import json
 import os
 from contextlib import asynccontextmanager
 from datetime import date
@@ -13,7 +14,8 @@ import numpy as np
 from fastapi import FastAPI, HTTPException, Query, Request
 
 from api.data import ServingData
-from api.schemas import SIMULATED_NOTE, Aggregate, Alert, Alerts, Catalog, DailyValue, Forecast, GroupTotal, Health, Item
+from api.schemas import (SIMULATED_NOTE, Aggregate, Alert, Alerts, Catalog, DailyValue, DriftReport, Forecast,
+                         GroupTotal, Health, Item)
 
 DEFAULT_SERVING_DIR = Path(__file__).resolve().parents[1] / "data" / "serving"
 
@@ -25,7 +27,8 @@ def _daily(dates, values) -> list[DailyValue]:
 def create_app(serving_dir: Optional[Path] = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        app.state.data = ServingData(serving_dir or os.environ.get("SERVING_DIR", DEFAULT_SERVING_DIR))
+        app.state.serving_dir = Path(serving_dir or os.environ.get("SERVING_DIR", DEFAULT_SERVING_DIR))
+        app.state.data = ServingData(app.state.serving_dir)
         yield
 
     app = FastAPI(
@@ -127,6 +130,15 @@ def create_app(serving_dir: Optional[Path] = None) -> FastAPI:
         return Alerts(days_of_cover=days_of_cover, min_shortfall_pct=min_shortfall_pct, forecast_start=d.forecast_dates[0].date(),
                       forecast_end=d.forecast_dates[-1].date(), n_evaluated=a.attrs["n_evaluated"],
                       n_at_risk=len(a), alerts=[Alert(**r) for r in rows.to_dict("records")])
+
+    @app.get("/drift", response_model=DriftReport)
+    def drift(request: Request):
+        """Latest drift report (written by `python -m src.monitoring`; read on each request, so a new
+        report is served without restarting the API)."""
+        path = request.app.state.serving_dir / "drift_report.json"
+        if not path.exists():
+            raise HTTPException(404, "no drift report yet; run `python -m src.monitoring`")
+        return json.loads(path.read_text(encoding="utf-8"))
 
     return app
 

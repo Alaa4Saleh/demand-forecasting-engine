@@ -133,3 +133,30 @@ def test_alerts_filters_and_validation(client):
     assert client.get("/alerts?days_of_cover=28&store_id=XX_9").status_code == 404
     for bad in ["days_of_cover=0", "days_of_cover=366", "days_of_cover=abc", ""]:
         assert client.get(f"/alerts?{bad}").status_code == 422
+
+
+def test_drift_report_missing_then_served(client):
+    report_path = client.app.state.serving_dir / "drift_report.json"
+    assert client.get("/drift").status_code == 404
+    report = {
+        "generated_at": "2026-01-01T00:00:00+00:00", "model": "lgbm_test",
+        "reference": {"start": "2015-01-01", "end": "2016-02-28", "sample_fraction": 0.1, "seed": 42,
+                      "rows_sampled": 100},
+        "windows": {"recent_actuals": {"start": "2016-03-28", "end": "2016-04-24", "last_year_start": "2015-03-28",
+                                       "last_year_end": "2015-04-24", "rows": 84}},
+        "thresholds": {"psi_flag": 0.2, "psi_watch": 0.1, "prediction_gap_pct": 15.0},
+        "features": [{"feature": "rmean_28", "window": "recent_actuals", "psi": 0.31, "psi_vs_last_year": 0.05,
+                      "ks_stat": 0.2, "ks_pvalue": 0.0, "ref_mean": 1.0, "cur_mean": 1.4, "status": "flagged"}],
+        "target": [{"category": "Total", "ref_mean_daily": 1.0, "cur_mean_daily": 1.1, "change_pct": 10.0,
+                    "ref_zero_share": 0.6, "cur_zero_share": 0.55, "zero_share_change_pp": -5.0}],
+        "prediction": [{"category": "Total", "forecast_mean_daily": 1.05, "recent_actual_mean_daily": 1.1,
+                        "gap_pct": -4.5, "status": "ok"}],
+        "flagged": ["rmean_28@recent_actuals"],
+    }
+    report_path.write_text(json.dumps(report))
+    try:
+        body = client.get("/drift").json()
+        assert body["flagged"] == ["rmean_28@recent_actuals"] and body["reference"]["seed"] == 42
+        assert body["features"][0]["status"] == "flagged" and body["features"][0]["psi_vs_last_year"] == 0.05
+    finally:
+        report_path.unlink()
