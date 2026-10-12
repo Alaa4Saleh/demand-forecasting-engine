@@ -21,3 +21,8 @@ Thumbs.db
 
 # Raw data
 data/raw/*.csv
+
+# Generated features and model artifacts
+data/processed/features/
+artifacts/
+data/processed/*.parquet
