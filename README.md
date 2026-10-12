@@ -143,24 +143,43 @@ is served by a FastAPI service and shown in a Streamlit dashboard.
   | `GET /catalog?store_id&cat_id` | Stores, categories, departments, items |
   | `GET /forecast?item_id&store_id&start&end` | Daily forecast for one item in one store, plus its last 28 days of sales |
   | `GET /aggregate?level=store\|cat\|dept\|state&key=` | Totals per group, and daily forecast vs actuals for one group |
-  | `GET /alerts?days_of_cover=N&store_id&cat_id&limit` | **Simulated** stock-out risk, ranked by estimated lost revenue |
+  | `GET /alerts?days_of_cover=N&min_shortfall_pct=20&store_id&cat_id&limit` | Demand surge vs recent run-rate (**simulated stock**), ranked by estimated lost revenue |
 
   - Unknown ids return 404. Malformed or out-of-window dates, and invalid parameters, return 422.
   - Interactive docs are at `/docs`.
 - **Dashboard** (`dashboard/app.py`): has three tabs, and reads only from the API.
   - **Product forecast:** recent sales vs forecast for one product in one store.
   - **Store & category totals:** actuals vs forecast by store, category, department or state.
-  - **Stock risk (simulated):** at-risk products, with a days-of-cover slider.
+  - **Demand surge (simulated stock):** products whose forecast runs above their recent sales
+    rate, with sliders for days of stock and minimum shortfall.
 
-> **Alerts are simulated.** M5 contains no inventory data. Each series is assumed to hold stock
-> equal to *N days* of its average daily sales over the last 28 days. A series is flagged when
-> its forecast demand over the 28-day window exceeds that stock.
-> - With N below 28, almost every steadily selling item is flagged by construction (for example,
->   25,744 of 28,903 at N = 21).
-> - From N = 28 upward, the list isolates items whose forecast runs above their recent sales rate
->   (12,955 at N = 28, 5,861 at N = 35).
-> - Alerts inherit model errors. For example, an item whose short spike sits in the ≥28-day-lagged
->   features (see Error analysis) shows up as a risk.
+**Dashboard screenshots** (served from the Docker containers):
+
+![Product forecast: last 28 days of actual sales vs the next 28 days of forecast](docs/img/dashboard_product_forecast.png)
+
+![Store totals: actual vs forecast by store, and the daily total across stores](docs/img/dashboard_totals.png)
+
+![Demand surge vs recent run-rate with simulated stock](docs/img/dashboard_demand_surge.png)
+
+> **Demand surge vs recent run-rate (simulated stock).** M5 contains no inventory data. Each series
+> is assumed to hold stock equal to *N days* of its average daily sales over the last 28 days. A
+> series is flagged when its 28-day forecast demand exceeds that stock by more than
+> `min_shortfall_pct` (default 20%).
+>
+> Series flagged, of 28,903 with recent sales:
+>
+> | Days of cover | 0% margin | 20% margin (default) | 50% margin |
+> |---|---:|---:|---:|
+> | 21 | 25,744 | 18,395 | 8,349 |
+> | 28 | 12,955 | 6,741 | 3,487 |
+> | 35 | 5,861 | 3,487 | 2,061 |
+> | 60 | 1,551 | 1,095 | 676 |
+>
+> - From N = 28 upward, the list isolates items whose forecast runs above their recent run-rate.
+>   Below 28, most steadily selling items qualify by construction.
+> - Flags can also reflect **model errors**, not only real demand changes. For example, an item
+>   whose short promotion spike is still in the ≥28-day-lagged features (see Error analysis)
+>   appears in the list.
 
 ## Repository structure
 
@@ -169,6 +188,7 @@ is served by a FastAPI service and shown in a Streamlit dashboard.
 │   ├── raw/                  # M5 CSVs (not tracked)
 │   ├── processed/            # cleaned parquet + per-store features (not tracked)
 │   └── serving/              # forecasts + recent actuals for the API (generated, not tracked)
+├── docs/img/                 # dashboard screenshots
 ├── notebooks/
 │   ├── 01_first_look.ipynb           # initial exploration
 │   ├── 02_eda_demand_patterns.ipynb  # EDA + cleaning, writes sales_long_clean.parquet
