@@ -6,8 +6,10 @@ Environment: Windows, PyCharm, venv, Python 3.11. Evaluation metric: WRMSSE.
 
 ## Data pipeline (done)
 - data/raw: sales_train_validation.csv, calendar.csv, sell_prices.csv
-- notebooks/01_first_look.ipynb: melt sales to long format, merge calendar, cast to category/int32,
-  add is_store_closed (Dec 25), trim rows before item release week (first week with a price).
+- Scope: 3,049 items x 10 stores (CA, TX, WI) = 30,490 series; 2011-01-29 -> 2016-04-24.
+- notebooks/01_first_look.ipynb: first look; melt sales to long format, merge calendar.
+- notebooks/02_eda_demand_patterns.ipynb: repeats melt/merge, casts to category/int32, adds is_store_closed
+  (Dec 25), trims rows before item release week (first week with a price), and WRITES the parquet (cells 13-15).
 - Result: data/processed/sales_long_clean.parquet, shape (46,027,957 x 20). Load it instead of rebuilding.
 - Findings: 59.7% zero-sale rows after trim (HOBBIES most intermittent); Walmart closed every Dec 25.
 
@@ -23,10 +25,28 @@ Environment: Windows, PyCharm, venv, Python 3.11. Evaluation metric: WRMSSE.
   `python -m src.features`, ~2 min). Lags 28/35/42, rolling mean/std 7/14/28 on sold shifted 28,
   calendar, price (sell_price, week-over-week change, price / store-cat-week mean). All sales features >= 28 days back.
 - Global LightGBM (src/models/lgbm.py, `python -m src.models.lgbm --train-start 2015-01-01`): Tweedie 1.1,
-  lr 0.05, 127 leaves; fit 2015-01-01 -> 2016-02-28 (12.8M rows), early stop on 2016-02-29 -> 2016-03-27,
+  lr 0.05, 127 leaves; fit 2015-01-01 -> 2016-02-28 (12.8M rows, 1.2 GB float32 matrix), early stop on 2016-02-29 -> 2016-03-27,
   scored on val. Model saved to artifacts/lgbm_tweedie.txt (gitignored).
   Result: WRMSSE 0.6341 (vs sNaive 0.9228, Naive 1.4864); best_iteration 78 (stopped very early);
   bottom levels ~0.85-0.89, aggregate levels 0.41-0.70. Gain dominated by rmean_28 (70%), then rmean_7, item_id.
+
+WRMSSE per level (val 2016-03-28 -> 2016-04-24):
+
+| Level | Naive | Seasonal Naive | LightGBM |
+|---|---|---|---|
+| total | 1.3843 | 0.6677 | 0.4133 |
+| state | 1.6089 | 0.7245 | 0.4730 |
+| store | 1.6322 | 0.8252 | 0.5184 |
+| cat | 1.4183 | 0.7543 | 0.4813 |
+| dept | 1.5939 | 0.9738 | 0.5904 |
+| state_cat | 1.5719 | 0.8347 | 0.5516 |
+| state_dept | 1.6359 | 0.9844 | 0.6530 |
+| store_cat | 1.6297 | 0.9205 | 0.6140 |
+| store_dept | 1.6808 | 1.0290 | 0.6994 |
+| item | 1.2699 | 1.1143 | 0.8891 |
+| item_state | 1.2361 | 1.1192 | 0.8732 |
+| item_store | 1.1752 | 1.1259 | 0.8527 |
+| WRMSSE | 1.4864 | 0.9228 | 0.6341 |
 
 ## Conventions
 - Never random split; always time-based. Avoid leakage in lag/target-encoding features.
