@@ -28,3 +28,6 @@ artifacts/
 data/processed/*.parquet
 data/serving/*.parquet
 data/serving/metadata.json
+
+# Local Claude Code preview configs
+.claude/launch.json

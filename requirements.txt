@@ -11,7 +11,7 @@ jupyter
 shap
 optuna
 pyspark
-pyarrow
+pyarrow>=13,<26,!=25.0.0  # streamlit requires <26 and !=25.0.0
 scipy
 pytest
 fastapi
