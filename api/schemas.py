@@ -5,11 +5,13 @@ from typing import Literal, Optional
 from pydantic import BaseModel, Field
 
 SIMULATED_NOTE = (
-    "SIMULATED: the M5 dataset has no inventory data. Stock is assumed to equal days_of_cover x the "
-    "series' average daily sales over the last 28 actual days; a series is flagged when forecast demand "
-    "over the forecast window exceeds that simulated stock. Series with no recent sales are not evaluated. "
-    "With days_of_cover below the 28-day window, most steadily selling series are flagged by construction; "
-    "values of 28 or more isolate series whose forecast runs above their recent sales rate."
+    "Demand surge vs recent run-rate (simulated stock). The M5 dataset has no inventory data: stock is "
+    "assumed to equal days_of_cover x the series' average daily sales over the last 28 actual days, and a "
+    "series is flagged when forecast demand over the 28-day forecast window exceeds that simulated stock by "
+    "more than min_shortfall_pct percent. With days_of_cover of 28 or more this isolates series whose forecast "
+    "runs above their recent sales rate; below 28 most steadily selling series qualify by construction. "
+    "Series with no recent sales are not evaluated. Flags can also reflect model errors (e.g. a short sales "
+    "spike that is still inside the >= 28-day-lagged features), not only genuine demand changes."
 )
 
 
@@ -82,6 +84,7 @@ class Alert(BaseModel):
     simulated_stock: float = Field(description="SIMULATED: days_of_cover x recent_daily_sales")
     forecast_demand: float = Field(description="Forecast units over the forecast window")
     shortfall_units: float
+    shortfall_pct: float = Field(description="Shortfall as a percentage of the simulated stock")
     est_lost_revenue: float = Field(description="shortfall_units x sell_price (USD)")
     stockout_date: date = Field(description="First day cumulative forecast demand exceeds the simulated stock")
 
@@ -90,6 +93,7 @@ class Alerts(BaseModel):
     simulated: Literal[True] = True
     note: str = SIMULATED_NOTE
     days_of_cover: int
+    min_shortfall_pct: float
     forecast_start: date
     forecast_end: date
     n_evaluated: int = Field(description="Series evaluated (with sales in the last 28 days, after filters)")

@@ -1,7 +1,7 @@
 """API tests against a tiny synthetic serving dataset (no model or real data needed).
 
 Series (28 forecast days from 2016-04-25, 28 history days before):
-    FOODS_1_001 @ CA_1     forecast 2.0/day, history 1/day, price 2.50 -> at risk with 28 days of cover
+    FOODS_1_001 @ CA_1     forecast 2.0/day, history 1/day, price 2.50 -> 100% shortfall with 28 days of cover
     FOODS_1_001 @ TX_1     forecast 1.0/day, history 1/day             -> exactly covered, not at risk
     HOBBIES_1_001 @ CA_1   forecast 0.5/day, history 0/day             -> no recent sales, not evaluated
 """
@@ -106,14 +106,25 @@ def test_aggregate(client):
 
 def test_alerts_simulated_math(client):
     body = client.get("/alerts?days_of_cover=28").json()
-    assert body["simulated"] is True and "SIMULATED" in body["note"]
+    assert body["simulated"] is True and "simulated stock" in body["note"] and body["min_shortfall_pct"] == 20
     assert body["n_evaluated"] == 2 and body["n_at_risk"] == 1     # HOBBIES has no recent sales
     a = body["alerts"][0]
     assert (a["item_id"], a["store_id"]) == ("FOODS_1_001", "CA_1")
     assert a["simulated_stock"] == pytest.approx(28.0)              # 28 days x 1/day
     assert a["shortfall_units"] == pytest.approx(28.0)              # 56 - 28
+    assert a["shortfall_pct"] == pytest.approx(100.0)
     assert a["est_lost_revenue"] == pytest.approx(70.0)             # 28 x 2.50
     assert a["stockout_date"] == "2016-05-09"                       # day 15: 30 > 28
+
+
+def test_alerts_min_shortfall_pct(client):
+    assert client.get("/alerts?days_of_cover=28&min_shortfall_pct=99").json()["n_at_risk"] == 1
+    assert client.get("/alerts?days_of_cover=28&min_shortfall_pct=100").json()["n_at_risk"] == 0  # strictly more
+    # 20 days of cover: CA_1 stock 20 vs 56 (180%), TX_1 stock 20 vs 28 (40%) -> both above 20%, CA_1 first
+    body = client.get("/alerts?days_of_cover=20").json()
+    assert [a["store_id"] for a in body["alerts"]] == ["CA_1", "TX_1"]
+    assert client.get("/alerts?days_of_cover=20&min_shortfall_pct=50").json()["n_at_risk"] == 1
+    assert client.get("/alerts?days_of_cover=28&min_shortfall_pct=-1").status_code == 422
 
 
 def test_alerts_filters_and_validation(client):

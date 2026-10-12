@@ -87,11 +87,15 @@ WRMSSEEvaluator.series_scores() gives per-series weight / RMSSE / contribution f
   Asserts non-negative/no NaN; forecast 1,142,145 units vs 1,183,626 actual in last 28 days (-3.5%).
 - api/ (FastAPI): /health, /catalog, /forecast, /aggregate, /alerts; data loaded once (SERVING_DIR env).
   api/ and dashboard/ must not import src/ (the Docker image only contains them + requirements-serving.txt).
-- /alerts is SIMULATED (M5 has no inventory): stock = days_of_cover x mean daily sales of last 28 days; flagged if
-  28-day forecast > stock; ranked by shortfall x price. N < 28 flags nearly everything (N=21: 25,744 of 28,903);
-  N=28: 12,955; N=35: 5,861; N=60: 1,551. Alerts inherit model errors (e.g. FOODS_3_382_CA_3 spike item).
+- /alerts = "demand surge vs recent run-rate (simulated stock)" (M5 has no inventory): stock = days_of_cover x mean
+  daily sales of last 28 days; flagged if 28-day forecast exceeds stock by > min_shortfall_pct (default 20) % of
+  stock; ranked by shortfall x price. Flagged of 28,903 at 0/20/50%: N=21 25,744/18,395/8,349; N=28
+  12,955/6,741/3,487; N=35 5,861/3,487/2,061; N=60 1,551/1,095/676. Flags also reflect model errors
+  (e.g. FOODS_3_382_CA_3 spike item is listed). Dashboard defaults: 28 days, 20%.
 - dashboard/app.py (Streamlit) reads only from the API (API_URL). Dockerfile (python:3.12-slim) + docker-compose.yml
   (api :8000 with healthcheck, dashboard :8501). Tests: tests/test_api.py on synthetic data (15 tests).
+- Docker verified: `docker compose up --build` -> api healthy, dashboard reaches http://api:8000 inside the network;
+  image 587 MB, runs as non-root. README screenshots (docs/img/) were taken from the containers with headless Edge.
 - Environment note: streamlit pins pyarrow < 26, so .venv now has pyarrow 25.0.1; .venv Python is 3.12.1.
 
 ## Conventions

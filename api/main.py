@@ -31,7 +31,8 @@ def create_app(serving_dir: Optional[Path] = None) -> FastAPI:
     app = FastAPI(
         title="Demand Forecasting API",
         description="28-day unit-sales forecasts for the M5 (Walmart) series from the global LightGBM model. "
-                    "Stock-out alerts are **simulated** - M5 contains no inventory data.",
+                    "Alerts flag demand surges vs the recent run-rate against **simulated** stock - "
+                    "M5 contains no inventory data.",
         version="1.0.0",
         lifespan=lifespan,
     )
@@ -110,17 +111,20 @@ def create_app(serving_dir: Optional[Path] = None) -> FastAPI:
     @app.get("/alerts", response_model=Alerts, description=SIMULATED_NOTE)
     def alerts(request: Request,
                days_of_cover: int = Query(..., ge=1, le=365, description="SIMULATED stock, in days of recent sales"),
+               min_shortfall_pct: float = Query(20.0, ge=0, le=1000,
+                                                description="Flag only if the shortfall exceeds this % of simulated stock"),
                store_id: Optional[str] = None, cat_id: Optional[str] = None,
                limit: int = Query(50, ge=1, le=1000)):
-        """SIMULATED stock-out risk ranked by estimated lost revenue (see description)."""
+        """Demand surge vs recent run-rate (simulated stock), ranked by estimated lost revenue."""
         d = data(request)
         for name, value in [("store_id", store_id), ("cat_id", cat_id)]:
             if value is not None and value not in d.known[name]:
                 raise HTTPException(404, f"unknown {name} '{value}'")
-        a = d.alerts(days_of_cover, store_id, cat_id)
+        a = d.alerts(days_of_cover, min_shortfall_pct, store_id, cat_id)
         rows = a.head(limit).round({"recent_daily_sales": 3, "simulated_stock": 2, "forecast_demand": 2,
-                                    "shortfall_units": 2, "est_lost_revenue": 2, "sell_price": 2})
-        return Alerts(days_of_cover=days_of_cover, forecast_start=d.forecast_dates[0].date(),
+                                    "shortfall_units": 2, "shortfall_pct": 1, "est_lost_revenue": 2,
+                                    "sell_price": 2})
+        return Alerts(days_of_cover=days_of_cover, min_shortfall_pct=min_shortfall_pct, forecast_start=d.forecast_dates[0].date(),
                       forecast_end=d.forecast_dates[-1].date(), n_evaluated=a.attrs["n_evaluated"],
                       n_at_risk=len(a), alerts=[Alert(**r) for r in rows.to_dict("records")])
 

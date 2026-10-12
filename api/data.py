@@ -47,11 +47,11 @@ class ServingData:
     def items(self) -> pd.DataFrame:
         return self.series[["item_id", "dept_id", "cat_id"]].drop_duplicates("item_id").sort_values("item_id")
 
-    def alerts(self, days_of_cover: int, store_id=None, cat_id=None) -> pd.DataFrame:
-        """SIMULATED stock-out risk. M5 has no inventory data: stock is assumed to equal
-        days_of_cover x the series' mean daily sales over the last 28 actual days. A series is at
-        risk when its forecast demand over the 28-day window exceeds that stock. Series with no
-        sales in the last 28 days are not evaluated."""
+    def alerts(self, days_of_cover: int, min_shortfall_pct: float = 20.0, store_id=None, cat_id=None) -> pd.DataFrame:
+        """Demand surge vs recent run-rate, against SIMULATED stock. M5 has no inventory data: stock is
+        assumed to equal days_of_cover x the series' mean daily sales over the last 28 actual days. A series
+        is flagged when forecast demand over the 28-day window exceeds that stock by more than
+        min_shortfall_pct percent of the stock. Series with no sales in the last 28 days are not evaluated."""
         mask = self.recent_daily > 0
         if store_id:
             mask &= self.series["store_id"].to_numpy() == store_id
@@ -59,7 +59,7 @@ class ServingData:
             mask &= self.series["cat_id"].to_numpy() == cat_id
         stock = days_of_cover * self.recent_daily[mask]
         cum = np.cumsum(self.F[mask], axis=1)
-        at_risk = cum[:, -1] > stock
+        at_risk = cum[:, -1] - stock > stock * min_shortfall_pct / 100
         first_short = np.argmax(cum > stock[:, None], axis=1)
 
         s = self.series[mask]
@@ -71,6 +71,7 @@ class ServingData:
             "simulated_stock": stock,
             "forecast_demand": cum[:, -1],
             "shortfall_units": cum[:, -1] - stock,
+            "shortfall_pct": 100 * (cum[:, -1] - stock) / stock,
             "stockout_date": self.forecast_dates[first_short].date,
         })[at_risk]
         out["est_lost_revenue"] = out["shortfall_units"] * out["sell_price"]

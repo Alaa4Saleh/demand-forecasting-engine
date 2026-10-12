@@ -70,7 +70,8 @@ with st.sidebar:
     category = st.selectbox("Category", [None] + catalog["categories"],
                             format_func=lambda c: "All categories" if c is None else nice(c))
 
-tab_item, tab_totals, tab_risk = st.tabs(["Product forecast", "Store & category totals", "Stock risk (simulated)"])
+tab_item, tab_totals, tab_risk = st.tabs(["Product forecast", "Store & category totals",
+                                          "Demand surge (simulated stock)"])
 
 # --- Product forecast ----------------------------------------------------------------------------
 with tab_item:
@@ -121,40 +122,48 @@ with tab_totals:
                                 "Forecast, next 28 days": st.column_config.NumberColumn(format="%.0f"),
                                 "Change (%)": st.column_config.NumberColumn(format="%+.1f")})
 
-# --- Simulated stock risk ------------------------------------------------------------------------
+# --- Demand surge vs recent run-rate (simulated stock) ------------------------------------------
 with tab_risk:
+    st.subheader("Demand surge vs recent run-rate (simulated stock)")
     st.warning("**Simulated inventory.** The M5 data contains no stock levels. Each product is assumed to hold "
                "stock equal to the chosen number of days of its average daily sales over the last 28 days. "
-               "Products are flagged when forecast demand for the next 28 days is higher than that stock. "
-               "Below 28 days of cover, almost every steadily selling product is flagged by construction.")
-    c1, c2 = st.columns([3, 1])
-    days = c1.slider("Simulated stock on hand (days of recent sales)", min_value=7, max_value=90, value=35, step=1)
-    top_n = c2.number_input("Products to show", min_value=10, max_value=500, value=50, step=10)
-    risk = api("/alerts", days_of_cover=days, store_id=store, cat_id=category, limit=int(top_n))
+               "Products are listed when forecast demand for the next 28 days exceeds that stock by more than the "
+               "chosen margin, i.e. the forecast runs above the recent sales rate. Below 28 days of stock, almost "
+               "every steadily selling product qualifies by construction. A listed product can also reflect a "
+               "forecast error (for example a short promotion spike the model still remembers), not only a real "
+               "demand change.")
+    c1, c2, c3 = st.columns([2, 2, 1])
+    days = c1.slider("Simulated stock on hand (days of recent sales)", min_value=7, max_value=90, value=28, step=1)
+    min_pct = c2.slider("Minimum shortfall (% of simulated stock)", min_value=0, max_value=200, value=20, step=5)
+    top_n = c3.number_input("Products to show", min_value=10, max_value=500, value=50, step=10)
+    risk = api("/alerts", days_of_cover=days, min_shortfall_pct=min_pct, store_id=store, cat_id=category,
+               limit=int(top_n))
     rows = pd.DataFrame(risk["alerts"])
     m1, m2, m3 = st.columns(3)
-    m1.metric("Products at risk", f"{risk['n_at_risk']:,}")
+    m1.metric("Products flagged", f"{risk['n_at_risk']:,}")
     m2.metric("Share of products checked", f"{100 * risk['n_at_risk'] / max(risk['n_evaluated'], 1):.1f}%")
     m3.metric(f"Est. lost revenue, top {len(rows)}", f"${rows['est_lost_revenue'].sum():,.0f}" if len(rows) else "$0")
     if rows.empty:
-        st.success("No products at risk with this much simulated stock.")
+        st.success("No product's forecast exceeds this much simulated stock by the chosen margin.")
     else:
         rows["Store"] = rows["store_id"].map(store_label)
         rows["Category"] = rows["cat_id"].map(nice)
         shown = rows.rename(columns={
             "item_id": "Product", "recent_daily_sales": "Avg daily sales (last 28 days)",
             "simulated_stock": "Simulated stock (units)", "forecast_demand": "Forecast demand, 28 days (units)",
-            "shortfall_units": "Shortfall (units)", "est_lost_revenue": "Est. lost revenue ($)",
+            "shortfall_units": "Shortfall (units)", "shortfall_pct": "Shortfall (% of stock)",
+            "est_lost_revenue": "Est. lost revenue ($)",
             "stockout_date": "Projected stock-out date", "sell_price": "Shelf price ($)"})
         cols = ["Product", "Store", "Category", "Shelf price ($)", "Avg daily sales (last 28 days)",
                 "Simulated stock (units)", "Forecast demand, 28 days (units)", "Shortfall (units)",
-                "Est. lost revenue ($)", "Projected stock-out date"]
+                "Shortfall (% of stock)", "Est. lost revenue ($)", "Projected stock-out date"]
         st.dataframe(shown[cols], hide_index=True, use_container_width=True, column_config={
             "Shelf price ($)": st.column_config.NumberColumn(format="$%.2f"),
             "Avg daily sales (last 28 days)": st.column_config.NumberColumn(format="%.1f"),
             "Simulated stock (units)": st.column_config.NumberColumn(format="%.0f"),
             "Forecast demand, 28 days (units)": st.column_config.NumberColumn(format="%.0f"),
             "Shortfall (units)": st.column_config.NumberColumn(format="%.0f"),
+            "Shortfall (% of stock)": st.column_config.NumberColumn(format="%.0f%%"),
             "Est. lost revenue ($)": st.column_config.NumberColumn(format="$%.0f"),
         })
     st.caption(risk["note"])
